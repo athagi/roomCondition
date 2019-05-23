@@ -2,7 +2,7 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -74,11 +74,10 @@ const (
 )
 
 type MyEvent struct {
-	Name string `json:"What is your name?"`
 }
 
 type MyResponse struct {
-	Message string `json:"Answer:"`
+	ExitCode int `json:"ExitCode:"`
 }
 
 func main() {
@@ -88,9 +87,14 @@ func main() {
 func roomCondition(event MyEvent) (MyResponse, error) {
 	accessKey := os.Getenv(natureRemoAccessKey)
 	if accessKey == "" {
-		log.Fatal("no ACCESS_KEY provided for nature remo")
+		msg := "no ACCESS_KEY provided for nature remo"
+		log.Println(msg)
+		return MyResponse{ExitCode: 1}, errors.New(msg)
 	}
-	natureRemo := getDevice(accessKey)
+	natureRemo, err := getDevice(accessKey)
+	if err != nil {
+		return MyResponse{ExitCode: 1}, err
+	}
 
 	locale, _ := time.LoadLocation("Asia/Tokyo")
 
@@ -107,10 +111,12 @@ func roomCondition(event MyEvent) (MyResponse, error) {
 
 	svc := getDynamoDBClient()
 
-	insertData(&roomCondition, svc)
+	err = insertData(&roomCondition, svc)
+	if err != nil {
+		return MyResponse{ExitCode: 1}, err
+	}
 
-	// os.Exit(0)
-	return MyResponse{Message: fmt.Sprintf("Hello %s!!", event.Name)}, nil
+	return MyResponse{ExitCode: 0}, nil
 }
 
 func getDynamoDBClient() *dynamodb.DynamoDB {
@@ -127,10 +133,12 @@ func getDynamoDBClient() *dynamodb.DynamoDB {
 	return svc
 }
 
-func insertData(roomCondition *RoomConditions, svc *dynamodb.DynamoDB) {
+func insertData(roomCondition *RoomConditions, svc *dynamodb.DynamoDB) error {
 	av, err := dynamodbattribute.MarshalMap(roomCondition)
 	if err != nil {
-		log.Fatalf("Got error marshalling item. %s", err)
+		msg := "Got error marshalling item. %s"
+		log.Println(err)
+		return errors.New(msg)
 	}
 
 	input := &dynamodb.PutItemInput{
@@ -140,38 +148,49 @@ func insertData(roomCondition *RoomConditions, svc *dynamodb.DynamoDB) {
 
 	_, err = svc.PutItem(input)
 	if err != nil {
-		log.Fatalf("Got error calling PutItem: %v", err)
+		log.Println("Got error calling PutItem: %v", av)
+		return err
 	}
 }
 
-func getDevice(accessKey string) NatureRemo {
+func getDevice(accessKey string) (NatureRemo, error) {
 	client := &http.Client{}
 	req, err := http.NewRequest("GET", "https://api.nature.global/1/devices", nil)
 	if err != nil {
-		log.Fatalln(err)
+		msg := "cannot get new request client"
+		log.Println(err)
+		return NatureRemo{}, errors.New(msg)
 	}
 	req.Header.Add("accept", "application/json")
 
 	req.Header.Add("Authorization", "Bearer "+accessKey)
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Fatalln(err)
+		log.Println(err)
+		msg := "cannot get response from remo"
+		return NatureRemo{}, errors.New(msg)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		log.Fatalf("nature remo returns %d. ", resp.StatusCode)
+		log.Println("nature remo returns %d. ", resp.StatusCode)
+		msg := "invalid status code"
+		return NatureRemo{}, errors.New(msg)
 	}
 	var data Device
 
 	byteArr, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		log.Fatalln(err)
+		log.Println(err)
+		msg := "failed to read response body"
+		return NatureRemo{}, errors.New(msg)
 	}
 	// TODO if get err of unauthorised
 	err = json.Unmarshal(byteArr, &data)
 	if err != nil {
-		log.Fatalln(err)
+		log.Println(err)
+		msg := "failed to unmarshal json"
+		return NatureRemo{}, errors.New(msg)
 	}
 
 	events := data[0].NewestEvents
@@ -190,5 +209,5 @@ func getDevice(accessKey string) NatureRemo {
 		IlluminanceCreatedAt: illuminanceCreatedAt,
 		Temperature:          temperature,
 		TemperatureCreatedAt: temperatureCreatedAt,
-	}
+	}, nil
 }
